@@ -5,112 +5,137 @@ weight: 10
 
 ## Introduction
 
-This quickstart guide walks through the steps needed to create a Lokomotive cluster on AWS with
-Flatcar Container Linux using Route53 as the DNS provider.
+This quickstart guide walks through the steps needed to create a Lokomotive cluster on AWS.
+
+Lokomotive runs on top of [Flatcar Container Linux](https://www.flatcar-linux.org/). This guide
+uses the `stable` channel.
+
+The guide uses [Amazon Route 53](https://aws.amazon.com/route53/) as a DNS provider. For more
+information on how Lokomotive handles DNS, refer to [this](../concepts/dns.md) document.
+
+Lokomotive can store Terraform state [locally](../configuration-reference/backend/local.md)
+or remotely within an [AWS S3 bucket](../configuration-reference/backend/s3.md). By default, Lokomotive
+stores Terraform state locally.
+
+[Lokomotive components](../concepts/components.md) complement the "stock" Kubernetes functionality
+by adding features such as load balancing, persistent storage and monitoring to a cluster. To keep
+this guide short you will deploy a single component - `httpbin` - which serves as a demo
+application to verify the cluster behaves as expected.
 
 By the end of this guide, you'll have a production-ready Kubernetes cluster running on AWS.
 
 ## Requirements
 
 * Basic understanding of Kubernetes concepts.
-* AWS account and IAM credentials.
-* AWS Route53 DNS Zone (registered Domain Name or delegated subdomain).
+* An AWS account and IAM credentials.
+* An AWS
+  [access key ID and secret](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html)
+  of a user with
+  [permissions](https://github.com/kinvolk/lokomotive/blob/master/docs/concepts/dns.md#aws-route-53)
+  to edit Route 53 records.
+* An AWS Route 53 zone (can be a subdomain).
 * Terraform v0.13.x installed locally.
 * An SSH key pair for management access.
-* `kubectl` installed locally to access the Kubernetes cluster.
+* Terraform `v0.13.x`
+  [installed](https://learn.hashicorp.com/terraform/getting-started/install.html#install-terraform).
+* `kubectl` [installed](https://kubernetes.io/docs/tasks/tools/install-kubectl/).
+
+>NOTE: The `kubectl` version used to interact with a Kubernetes cluster needs to be compatible with
+>the version of the Kubernetes control plane. Ideally you should install a `kubectl` binary whose
+>version is identical to the Kubernetes control plane included with a Lokomotive release. However,
+>some degree of version "skew" is tolerated - see the Kubernetes
+>[version skew policy](https://kubernetes.io/docs/setup/release/version-skew-policy/) document for
+>more information. You can determine the version of the Kubernetes control plane included with a
+>Lokomotive release by looking at the [release notes][releases].
+
 
 ## Steps
 
 ### Step 1: Install lokoctl
 
-lokoctl is a command-line interface for Lokomotive.
+`lokoctl` is the command-line interface for managing Lokomotive clusters.
 
-To install `lokoctl`, follow the instructions in the [lokoctl installation](../installer/lokoctl.md)
-guide.
-
-### Step 2: Set up a working directory
-
-It's better to start fresh in a new working directory, as the state of the cluster is stored in this
-directory.
-
-This also makes the cleanup task easier.
+Download the latest `lokoctl` binary for your platform:
 
 ```console
-mkdir -p lokomotive-infra/myawscluster
-cd lokomotive-infra/myawscluster
+export os=linux  # For macOS, use `os=darwin`.
+
+export release=$(curl -s https://api.github.com/repos/kinvolk/lokomotive/releases | jq -r '.[0].name' | tr -d v)
+curl -LO "https://github.com/kinvolk/lokomotive/releases/download/v${release}/lokoctl_${release}_${os}_amd64.tar.gz"
 ```
 
-### Step 3: Set up credentials from environment variables
-
-The AWS credentials file can be found at `~/.aws/credentials` if you have set up and configured AWS
-CLI before. If you want to use that account, you don't need to specify any credentials for lokoctl.
-
-You can also take any other credentials mechanism used by the AWS CLI, for example environment
-variables. Either prepend them when starting lokoctl or export each of them once in the current
-terminal session:
+Extract the binary and copy it to a place under your `$PATH`:
 
 ```console
-AWS_ACCESS_KEY_ID=EXAMPLEID AWS_SECRET_ACCESS_KEY=EXAMPLEKEY lokoctl ...
+tar zxvf lokoctl_${release}_${os}_amd64.tar.gz
+sudo cp lokoctl_${release}_${os}_amd64/lokoctl /usr/local/bin
+rm -rf lokoctl_${release}_${os}_amd64*
 ```
-or
+
+### Step 2: Create a cluster configuration
+
+Create a directory for the cluster-related files and navigate to it:
 
 ```console
-export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
-export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
-export AWS_DEFAULT_REGION=us-east-1
+mkdir lokomotive-demo && cd lokomotive-demo
 ```
 
-### Step 4: Define cluster configuration
+Create a file named `cluster.lokocfg` with the following contents:
 
-To create a Lokomotive cluster, we need to define a configuration.
+```hcl
+cluster "aws" {
+  asset_dir            = "./assets"
+  cluster_name         = "lokomotive-demo"
+  controller_count     = 1
+  dns_zone             = "example.com"
+  dns_zone_id          = "ZQC39L1XVW0D"
+  ignore_x509_cn_check = true
 
-A [production-ready configuration](https://github.com/kinvolk/lokomotive/blob/v0.5.0/examples/aws-production/cluster.lokocfg) is already provided for ease of
-use. Copy the example configuration to the working directory and modify accordingly.
+  project_id           = "89273817-4f44-4b41-9f0c-cb00bf538542"
+  region               = "us-east-1"
 
-The provided configuration installs the Lokomotive cluster and the following components:
+  ssh_pubkeys          = ["ssh-rsa AAAA..."]
 
-* [metrics-server](../configuration-reference/components/metrics-server.md)
-* [openebs-operator](../configuration-reference/components/openebs-operator.md)
-* [flatcar-linux-update-operator](../configuration-reference/components/flatcar-linux-update-operator.md)
-* [openebs-storage-class](../configuration-reference/components/openebs-storage-class.md)
-* [prometheus-operator](../configuration-reference/components/prometheus-operator.md)
+  worker_pool "pool-1" {
+    count         = 2
+    instance_type = "i3.large"
+    ssh_pubkeys   = ["ssh-rsa AAAA..."]
+  }
+}
 
-You can configure the components as per your requirements.
+# A demo application.
+component "httpbin" {
+  ingress_host = "httpbin.example.com"
+}
+```
 
-Lokomotive can store Terraform state [locally](../configuration-reference/backend/local.md)
-or remotely within an [AWS S3 bucket](../configuration-reference/backend/s3.md). By default, Lokomotive
-stores Terraform state locally.
+Replace the parameters above using the following information:
 
-Create a variables file named `lokocfg.vars` in the working directory to set values for variables
-defined in the configuration file.
+- `dns_zone` - a Route 53 zone name. A subdomain will be created under this zone in the following
+  format: `<cluster_name>.<zone>`
+- `dns_zone_id` - a Route 53 DNS zone ID which can be found in your AWS console.
+- `project_id` - the Packet project ID to deploy the cluster in.
+- `ssh_pubkeys` - A list of strings representing the *contents* of the public SSH keys which should
+  be authorized on cluster nodes.
+
+The rest of the parameters may be left as-is. For more information about the configuration options
+see the [configuration reference](../configuration-reference/platforms/aws.md).
+
+
+### Step 3: Deploy the cluster
+
+>NOTE: If you have the AWS CLI installed and configured for an AWS account, you can skip setting
+>the `AWS_*` variables below. `lokoctl` follows the standard AWS authentication methods, which
+>means it will use the `default` AWS CLI profile if no explicit credentials are specified.
+>Similarly, environment variables such as `AWS_PROFILE` can be used to instruct `lokoctl` to use a
+>specific AWS CLI profile for AWS authentication.
+
+Set up your Packet and AWS credentials in your shell:
 
 ```console
-#lokocfg.vars
-ssh_public_keys = ["ssh-rsa AAAAB3Nz...", "ssh-rsa AAAAB3Nz...", ...]
-
-state_s3_bucket = "name-of-the-s3-bucket-to-store-the-cluster-state"
-lock_dynamodb_table = "name-of-the-dynamodb-table-for-state-locking"
-
-dns_zone = "dns-zone-name"
-route53_zone_id = "zone-id-of-the-dns-zone"
-
-cert_manager_email = "email-address-used-for-cert-manager-component"
-grafana_admin_password = "password-for-grafana"
+export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7FAKE
+export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYFAKE
 ```
-
-**NOTE**: You can separate component configurations from cluster configuration in separate
-configuration files if doing so fits your needs.
-
-Example:
-```console
-$ ls lokomotive-infra/myawscluster
-cluster.lokocfg  prometheus-operator.lokocfg  lokocfg.vars
-```
-
-For advanced cluster configurations and more information refer to the [AWS configuration
-guide](../configuration-reference/platforms/aws.md).
-
-### Step 5: Create Lokomotive cluster
 
 Add a private key corresponding to one of the public keys specified in `ssh_pubkeys` to your `ssh-agent`:
 
@@ -119,60 +144,87 @@ ssh-add ~/.ssh/id_rsa
 ssh-add -L
 ```
 
-Run the following command to create the cluster:
+Deploy the cluster:
 
 ```console
-lokoctl cluster apply
+lokoctl cluster apply -v
 ```
-Once the command finishes, your Lokomotive cluster details are stored in the path you've specified
-under `asset_dir`.
 
-## Verification
+The deployment process typically takes about 15 minutes. Upon successful completion, an output
+similar to the following is shown:
 
-A successful installation results in the output:
-
-```console
-module.aws-myawscluster.null_resource.bootkube-start: Still creating... [1m50s elapsed]
-module.aws-myawscluster.null_resource.bootkube-start: Still creating... [2m0s elapsed]
-module.aws-myawscluster.null_resource.bootkube-start: Creation complete after 2m6s [id=5156996152315868880]
-
-Apply complete! Resources: 118 added, 0 changed, 0 destroyed.
-
-Your configurations are stored in /home/imran/lokoctl-assets/myawscluster
+```
+Your configurations are stored in ./assets
 
 Now checking health and readiness of the cluster nodes ...
 
-Node              Ready    Reason          Message
-
-ip-10-0-39-75     True     KubeletReady    kubelet is posting ready status
-ip-10-0-39-78     True     KubeletReady    kubelet is posting ready status
-ip-10-0-39-29     True     KubeletReady    kubelet is posting ready status
-ip-10-0-12-241    True     KubeletReady    kubelet is posting ready status
-ip-10-0-12-244    True     KubeletReady    kubelet is posting ready status
-ip-10-0-12-249    True     KubeletReady    kubelet is posting ready status
+Node                             Ready    Reason          Message                            
+                                                                                             
+lokomotive-demo-controller-0       True     KubeletReady    kubelet is posting ready status    
+lokomotive-demo-pool-1-worker-0    True     KubeletReady    kubelet is posting ready status    
+lokomotive-demo-pool-1-worker-1    True     KubeletReady    kubelet is posting ready status    
 
 Success - cluster is healthy and nodes are ready!
 ```
+## Verification
 
-Use the generated `kubeconfig` file to access the Kubernetes cluster and list nodes.
+Use the generated `kubeconfig` file to access the cluster:
 
 ```console
-export KUBECONFIG=./lokomotive-assets/cluster-assets/auth/kubeconfig
+export KUBECONFIG=$(pwd)/assets/cluster-assets/auth/kubeconfig
 kubectl get nodes
+```
+
+Sample output:
+
+```
+NAME                            STATUS   ROLES    AGE   VERSION
+lokomotive-demo-controller-0      Ready    <none>   33m   v1.17.4
+lokomotive-demo-pool-1-worker-0   Ready    <none>   33m   v1.17.4
+lokomotive-demo-pool-1-worker-1   Ready    <none>   33m   v1.17.4
+```
+
+Verify all pods are ready:
+
+```console
+kubectl get pods -A
+```
+
+Verify you can access httpbin:
+
+```console
+kubectl -n httpbin port-forward svc/httpbin 8080
+
+# In a new terminal.
+curl http://localhost:8080/get
+```
+
+Sample output:
+
+```
+{
+  "args": {}, 
+  "headers": {
+    "Accept": "*/*", 
+    "Host": "localhost:8080", 
+    "User-Agent": "curl/7.70.0"
+  }, 
+  "origin": "127.0.0.1", 
+  "url": "http://localhost:8080/get"
+}
 ```
 
 ## Using the cluster
 
-At this point you have access to the Kubernetes cluster and can use it!
-If you don't have Kubernetes experience you can check out the [Kubernetes
-Basics official
-documentation](https://kubernetes.io/docs/tutorials/kubernetes-basics/deploy-app/deploy-intro/)
-to learn about its usage.
+At this point you should have access to a Lokomotive cluster and can use it to deploy applications.
 
-**Note**: Lokomotive sets up a pretty restrictive Pod Security Policy that
-disallows running containers as root by default, check the [Pod Security Policy
-documentation](../concepts/securing-lokomotive-cluster.md#cluster-wide-pod-security-policy)
-for more details.
+If you don't have any Kubernetes experience, you can check out the [Kubernetes
+Basics](https://kubernetes.io/docs/tutorials/kubernetes-basics/deploy-app/deploy-intro/) tutorial.
+
+>NOTE: Lokomotive uses a relatively restrictive Pod Security Policy by default. This policy
+>disallows running containers as root. Refer to the
+>[Pod Security Policy documentation](../concepts/securing-lokomotive-cluster.md#cluster-wide-pod-security-policy)
+>for more details.
 
 ## Cleanup
 
@@ -201,11 +253,11 @@ module.aws-myawscluster.null_resource.copy-controller-secrets: Still creating...
 The error probably happens because the `ssh_pubkeys` provided in the configuration is missing in the
 `ssh-agent`.
 
-To rectify the error, you need to:
+In case the deployment process seems to hang at the `copy-controller-secrets` phase for a long
+time, check the following:
 
-1. Follow the steps [to add the SSH key to the
-   ssh-agent](https://help.github.com/en/github/authenticating-to-github/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent#adding-your-ssh-key-to-the-ssh-agent).
-2. Retry [Step 5](#step-5-create-lokomotive-cluster).
+- Verify the correct private SSH key was added to `ssh-agent`.
+- Verify that you can SSH into the created controller node from the machine running `lokoctl`.
 
 ### IAM Permission Issues
 
@@ -221,3 +273,5 @@ You can now start deploying your workloads on the cluster.
 
 For more information on installing supported Lokomotive components, you can visit the [component
 configuration references](../configuration-reference/components).
+
+[releases]: https://github.com/kinvolk/lokomotive/releases
